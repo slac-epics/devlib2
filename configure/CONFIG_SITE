@@ -12,7 +12,6 @@
 # for a subset of the cross-compiled target architectures
 # that Base is built for.
 #CROSS_COMPILER_TARGET_ARCHS = RTEMS-mvme3100
-CROSS_COMPILER_TARGET_ARCHS = RTEMS-beatnik RTEMS-mvme3100 vxWorks-mpc8540 vxWorks-ppc604_long vxWorks-ppc604_altivec
 
 # Set this when your IOC and the host use different paths
 # to access the application. This will be needed to boot
