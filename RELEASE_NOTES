@@ -12,4 +12,7 @@
 #
 #==============================================================
 
+devlib2-2-2_1-0:  Initial import and use of the devlib2 library
+                  Documentation and package is located here:
+                  http://epics.sourceforge.net/devlib2
 
