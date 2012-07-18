@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <string.h>
 #include <errno.h>
 
 #include <unistd.h>
@@ -66,6 +67,12 @@
 #define PCI_BASE_ADDRESS_MEM_MASK      (~0x0fUL)
 #define PCI_BASE_ADDRESS_IO_MASK      (~0x03UL)
 
+#define CMODE_READ 1
+#define CMODE_WRTE 2
+#define CMODE_RDWR 3
+#define CMODE_RONL 0x11
+#define CMODE_NONE 0x10
+ 
 /**@brief Info of a single PCI device
  *
  * Lifetime: Created in linuxDevPCIInit and free'd in linuxDevFinal
@@ -90,6 +97,8 @@ struct osdPCIDevice {
     char *linuxDriver;
 
     int fd; /* /dev/uio# */
+	int cfd; /* config-space descriptor */
+	int cmode; /* config-space mode */
 
     epicsMutexId devLock; /* guard access to isrs list */
 
@@ -150,11 +159,22 @@ static
 char*
 vallocPrintf(const char *format, va_list args)
 {
+	va_list nargs;
     char* ret=NULL;
     int size, size2;
 
+	/* May use a va_list only *once* (on some implementations it may
+	 * be a reference to something that holds internal state information
+	 *
+ 	 * Luckily, C99 provides va_copy.
+	 */
+	va_copy(nargs, args);
+
     /* Take advantage of the fact that sprintf will tell us how much space to allocate */
-    size=vsnprintf("",0,format,args);
+    size=vsnprintf("",0,format,nargs);
+
+	va_end(nargs);
+
     if (size<=0) {
         errlogPrintf("vaprintf: Failed to convert format '%s'\n",format);
         goto fail;
@@ -435,6 +455,7 @@ int linuxDevPCIInit(void)
             goto fail;
         }
         osd->fd=-1;
+		osd->cfd = -1;
 
         int matched=fscanf(dlist, "%4x %8x %2x",
                            &bdf, &vendor_device, &irq);
@@ -670,6 +691,7 @@ done:
   return ret;
 }
 
+
 static
 int
 linuxDevPCIToLocalAddr(
@@ -679,6 +701,7 @@ linuxDevPCIToLocalAddr(
   unsigned int opt
 )
 {
+int mapno,i;
     osdPCIDevice *osd=CONTAINER((epicsPCIDevice*)dev,osdPCIDevice,dev);
 
     if(epicsMutexLock(osd->devLock)!=epicsMutexLockOK)
@@ -690,9 +713,26 @@ linuxDevPCIToLocalAddr(
     }
 
     if (!osd->base[bar]) {
+
+		if ( osd->dev.bar[bar].ioport ) {
+            errlogPrintf("Failed to MMAP BAR %u of %u:%u.%u -- mapping of IOPORTS is not possible\n", bar,
+                         osd->dev.bus, osd->dev.device, osd->dev.function);
+			return S_dev_addrMapFail;
+		}
+
+		/* mmap requires the number of *mappings* times pagesize;
+		 * valid mappings are only PCI memory regions.
+		 * Let's count them here
+		 */
+		for ( i=0, mapno=bar; i<=bar; i++ ) {
+			if ( osd->dev.bar[i].ioport ) {
+				mapno--;
+			}
+		}
+		
         osd->base[bar] = mmap(NULL, osd->offset[bar]+osd->len[bar],
                               PROT_READ|PROT_WRITE, MAP_SHARED,
-                              osd->fd, bar*pagesize);
+                              osd->fd, mapno*pagesize);
         if (osd->base[bar]==MAP_FAILED) {
             perror("Failed to map BAR");
             errlogPrintf("Failed to MMAP BAR %u of %u:%u.%u\n", bar,
@@ -770,7 +810,7 @@ int linuxDevPCIConnectInterrupt(
      */
     isr->waiter = epicsThreadCreate(name,
                                     epicsThreadPriorityMax-1,
-                                    epicsThreadStackMedium,
+                                    epicsThreadGetStackSize(epicsThreadStackMedium),
                                     isrThread,
                                     isr
                                     );
@@ -914,6 +954,79 @@ int linuxDevPCIDisconnectInterrupt(
     return ret;
 }
 
+static int
+linuxDevPCIConfigAccess(const epicsPCIDevice *dev, unsigned offset, void *pArg, DevPCIAccMode mode)
+{
+int           rval    = S_dev_internal;
+char         *scratch = 0;
+osdPCIDevice *osd     = CONTAINER((epicsPCIDevice*)dev,osdPCIDevice,dev);
+ssize_t       st;
+int           cmode;
+
+    if(epicsMutexLock(osd->devLock)!=epicsMutexLockOK)
+        return S_dev_internal;
+
+	if ( CMODE_NONE == osd->cmode ) {
+		/* have already tried to open */
+		rval = S_dev_badRequest;
+		goto bail;
+	}
+
+	if ( -1 == osd->cfd ) {
+		if ( ! (scratch = allocPrintf(BUSBASE"config", osd->dev.bus, osd->dev.device, osd->dev.function)) ) {
+				rval = S_dev_noMemory;
+				goto bail;
+		}
+		if ( (osd->cfd = open(scratch, O_RDWR, 0)) < 0 ) {
+			errlogPrintf("devLibPCIOSD: Unable to open configuration space for writing: %s\n", strerror(errno));
+			/* try readonly */
+			if ( (osd->cfd = open(scratch, O_RDONLY, 0)) < 0 ) {
+					errlogPrintf("devLibPCIOSD: Unable to open configuration space for read-only: %s\n", strerror(errno));
+					rval = S_dev_badRequest;
+					osd->cmode = CMODE_NONE;
+					goto bail;
+			}
+			osd->cmode = CMODE_RONL;
+		} else {
+			osd->cmode = CMODE_RDWR;
+		}
+	}
+
+	cmode = (CFG_ACC_WRITE(mode) ? CMODE_WRTE : CMODE_READ);
+
+	if ( ! (osd->cmode & cmode) ) {
+		rval = S_dev_badRequest;
+		goto bail;
+	}
+
+	if ( CFG_ACC_WRITE(mode) ) {
+		st = pwrite( osd->cfd, pArg, CFG_ACC_WIDTH(mode), offset );
+	} else {
+		st = pread( osd->cfd, pArg, CFG_ACC_WIDTH(mode), offset );
+	}
+
+	if ( CFG_ACC_WIDTH(mode) != st ) {
+		if ( st < 0 )
+			errlogPrintf("devLibPCIOSD: Unable to %s %u bytes %s configuration space: %s\n",
+			             CFG_ACC_WRITE(mode) ? "write" : "read",
+			             CFG_ACC_WIDTH(mode),
+			             CFG_ACC_WRITE(mode) ? "to" : "from",
+			             strerror(errno));
+                       
+		rval = S_dev_internal;
+		goto bail;
+	}
+
+	rval = 0;
+
+bail:
+	free(scratch);
+
+    epicsMutexUnlock(osd->devLock);
+
+	return rval;
+}
+
 devLibPCI plinuxPCI = {
   "native",
   linuxDevPCIInit, linuxDevFinal,
@@ -921,7 +1034,8 @@ devLibPCI plinuxPCI = {
   linuxDevPCIToLocalAddr,
   linuxDevPCIBarLen,
   linuxDevPCIConnectInterrupt,
-  linuxDevPCIDisconnectInterrupt
+  linuxDevPCIDisconnectInterrupt,
+  linuxDevPCIConfigAccess
 };
 #include <epicsExport.h>
 
