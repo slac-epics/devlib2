@@ -11,6 +11,8 @@
 #  Mod:
 #
 #==============================================================
+devlib2-R3-0-0_1-0: Updates and many bug fixes from Till
+                    Have a look at the ChangeLog.
 
 devlib2-2-2_1-0:  Initial import and use of the devlib2 library
                   Documentation and package is located here:
