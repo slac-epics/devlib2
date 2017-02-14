@@ -5,4 +5,4 @@
 /lib/
 /cfg/
 O.*/
-*.local
+RELEASE_SITE
