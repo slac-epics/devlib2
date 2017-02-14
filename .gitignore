@@ -1,7 +1,8 @@
-/bin/
-/db/
-/dbd/
-/include/
-/lib/
-O.*/
+RELEASE_SITE
+O.*
+db
+dbd
+include
+lib
+bin
 *.local
