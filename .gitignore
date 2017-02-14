@@ -5,4 +5,3 @@ dbd
 include
 lib
 bin
-*.local
