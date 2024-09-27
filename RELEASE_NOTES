@@ -1,2 +1,5 @@
+R2.8-0.1.1:   27-Sep-2024, J. Lorelli (lorelli)
+    Fix pcitest.c build on RTEMS
+
 R2.8-0.1.0:   14-Feb-2017, H. Slepicka (slepicka)
     First version of devlib2 working with the new Git Workflow.
