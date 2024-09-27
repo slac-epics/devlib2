@@ -67,7 +67,11 @@ static void findRootBridge(void) {
     testOk1(dev->id.device==val);
 }
 
+#ifdef __rtems__
+int pcitest() {
+#else
 MAIN(pcitest) {
+#endif
     testPlan(0);
     devLibPCIRegisterBaseDefault();
     devLibPCIUse(NULL);
