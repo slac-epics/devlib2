@@ -52,10 +52,6 @@
 #  define USE_COMPLETE
 #endif
 
-#ifdef __rtems__
-#include <rtems/bspIo.h>
-#endif
-
 #ifndef __rtems__
 #define printk errlogPrintf
 #endif
